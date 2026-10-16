@@ -34,6 +34,12 @@ For accurate biomechanical analysis, ICC-approved 3D motion capture is required.
     analyse_parser.add_argument('--output', '-o', default='output',
                                help='Output directory (default: output)')
     analyse_parser.add_argument('--overrides', help='JSON file with manual frame overrides')
+    analyse_parser.add_argument('--enhanced', action='store_true',
+                               help='Generate enhanced video and HTML report with charts and alerts')
+    analyse_parser.add_argument('--full-rotation', action='store_true',
+                               help='Use full rotation analysis with strict no-bend rules (samples every 0.01s)')
+    analyse_parser.add_argument('--strict-tolerance', type=float, default=3.0,
+                               help='Noise tolerance in degrees for strict mode (default: 3.0)')
     
     args = parser.parse_args()
     
@@ -77,10 +83,14 @@ def analyse_command(args):
     print("=" * 70)
     print()
     
-    analyser = BowlingAnalyser()
+    analyser = BowlingAnalyser(strict_tolerance=args.strict_tolerance)
     
     try:
-        results = analyser.analyse_video(args.video, args.output, manual_overrides)
+        results = analyser.analyse_video(
+            args.video, args.output, manual_overrides, 
+            enhanced_report=args.enhanced,
+            full_rotation_mode=args.full_rotation
+        )
         
         print("\n" + "=" * 70)
         print("ANALYSIS COMPLETE")
@@ -88,11 +98,28 @@ def analyse_command(args):
         
         for delivery in results:
             print(f"\nDelivery {delivery['delivery_number']}:")
-            print(f"  Extension: {delivery['elbow_extension']:.1f}°")
-            print(f"  Result: {delivery['result']}")
-            print(f"  Confidence: {delivery['pose_confidence']:.2f}")
-            if delivery['quality_notes']:
-                print(f"  Notes: {', '.join(delivery['quality_notes'])}")
+            
+            if 'strict_verdict' in delivery:
+                # Full rotation mode
+                print(f"  Native FPS: {delivery['native_fps']:.1f}")
+                print(f"  Samples: {delivery['num_samples']} frames (1 per frame at native FPS)")
+                print(f"  Frame interval: {delivery['frame_interval']:.4f}s")
+                print(f"  Calculated noise: {delivery['calculated_noise_tolerance']:.1f}°")
+                print(f"\n  STRICT MODE (no-bend rule, tolerance: {delivery['strict_tolerance']:.1f}°):")
+                print(f"    Verdict: {delivery['strict_verdict']}")
+                print(f"    Events: {delivery['strict_num_events']}")
+                print(f"    Reason: {delivery['strict_reason']}")
+                print(f"\n  ICC MODE (15° threshold, horizontal to release):")
+                print(f"    Verdict: {delivery['icc_verdict']}")
+                print(f"    Extension: {delivery.get('icc_extension', 0):.1f}°")
+                print(f"    Reason: {delivery['icc_reason']}")
+            else:
+                # Pattern-based mode
+                print(f"  Extension: {delivery['elbow_extension']:.1f}°")
+                print(f"  Result: {delivery['result']}")
+                print(f"  Confidence: {delivery['pose_confidence']:.2f}")
+                if delivery.get('quality_notes'):
+                    print(f"  Notes: {', '.join(delivery['quality_notes'])}")
         
         print(f"\nFull results saved to: {args.output}/")
         

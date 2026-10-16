@@ -12,6 +12,12 @@ from .delivery_detector import DeliveryDetector
 from .phase_detector import PhaseDetector
 from .angle_calculator import calculate_angle_3d, calculate_elbow_extension, smooth_positions
 from .video_annotator import VideoAnnotator
+from .enhanced_video_annotator import EnhancedVideoAnnotator
+from .html_report_generator import HTMLReportGenerator
+from .extension_analyzer import analyze_extension_pattern, classify_action
+from .full_rotation_analyzer import FullRotationAnalyzer
+from .full_rotation_report import FullRotationHTMLReport
+from .slowmo_video_generator import SlowMotionVideoGenerator
 
 
 class BowlingAnalyser:
@@ -19,14 +25,21 @@ class BowlingAnalyser:
     
     ICC_THRESHOLD = 15.0  # degrees
     
-    def __init__(self):
+    def __init__(self, strict_tolerance: float = 3.0):
         """Initialize analyser components."""
         self.pose_detector = PoseDetector()
         self.delivery_detector = DeliveryDetector()
         self.video_annotator = VideoAnnotator()
+        self.enhanced_video_annotator = EnhancedVideoAnnotator()
+        self.html_report_generator = HTMLReportGenerator()
+        self.full_rotation_analyzer = FullRotationAnalyzer(strict_tolerance=strict_tolerance)
+        self.full_rotation_report = FullRotationHTMLReport()
+        self.slowmo_generator = SlowMotionVideoGenerator()
     
     def analyse_video(self, video_path: str, output_dir: str,
-                     manual_overrides: Optional[Dict] = None) -> List[Dict]:
+                     manual_overrides: Optional[Dict] = None,
+                     enhanced_report: bool = False,
+                     full_rotation_mode: bool = False) -> List[Dict]:
         """
         Analyse bowling video for illegal actions.
         
@@ -35,6 +48,7 @@ class BowlingAnalyser:
             output_dir: Directory for output files
             manual_overrides: Optional dict with manual frame overrides
                              Format: {delivery_idx: {'horizontal_frame': int, 'release_frame': int}}
+            enhanced_report: Generate enhanced video and HTML report
         
         Returns:
             List of delivery analysis results
@@ -62,16 +76,38 @@ class BowlingAnalyser:
         for idx, (start_frame, end_frame) in enumerate(deliveries):
             print(f"\nAnalysing delivery {idx + 1}...")
             
-            result = self._analyse_delivery(
-                landmarks_list, bowling_arm, start_frame, end_frame,
-                idx, manual_overrides, video_metadata['fps']
-            )
+            if full_rotation_mode:
+                # Use full rotation analysis
+                result = self._analyse_delivery_full_rotation(
+                    landmarks_list, bowling_arm, video_metadata,
+                    idx, manual_overrides, start_frame, end_frame,
+                    output_dir
+                )
+            else:
+                # Use original pattern-based analysis
+                result = self._analyse_delivery(
+                    landmarks_list, bowling_arm, start_frame, end_frame,
+                    idx, manual_overrides, video_metadata['fps']
+                )
             
             delivery_results.append(result)
             
-            print(f"  Extension: {result['elbow_extension']:.1f}°")
-            print(f"  Result: {result['result']}")
-            print(f"  Reason: {result['reason']}")
+            if full_rotation_mode:
+                print(f"  Strict Mode: {result['strict_verdict']}")
+                print(f"  ICC Mode: {result['icc_verdict']}")
+                
+                # Export CSV
+                csv_path = os.path.join(output_dir, f'delivery_{idx + 1}_samples.csv')
+                self.full_rotation_analyzer.export_samples_csv(
+                    result['full_rotation_analysis']['native_samples'], 
+                    csv_path,
+                    result['full_rotation_analysis']['native_fps']
+                )
+                print(f"  CSV exported: {csv_path}")
+            else:
+                print(f"  Extension: {result['elbow_extension']:.1f}°")
+                print(f"  Result: {result['result']}")
+                print(f"  Reason: {result['reason']}")
         
         # Save JSON results
         json_path = os.path.join(output_dir, 'analysis_results.json')
@@ -86,12 +122,63 @@ class BowlingAnalyser:
         
         print(f"\nResults saved to: {json_path}")
         
-        # Create annotated video
-        output_video = os.path.join(output_dir, 'annotated_video.mp4')
-        print(f"\nCreating annotated video: {output_video}")
-        self.video_annotator.create_annotated_video(
-            video_path, output_video, landmarks_list, delivery_results, bowling_arm
-        )
+        # Generate enhanced reports and videos
+        if enhanced_report and len(delivery_results) > 0:
+            if full_rotation_mode:
+                # Full rotation mode: Generate specialized report and slow-mo video
+                print("\nGenerating full rotation reports...")
+                self._generate_full_rotation_report(
+                    video_path, landmarks_list, delivery_results[0], output_dir, bowling_arm
+                )
+                
+                # Generate slow-motion preview video
+                slowmo_path = os.path.join(output_dir, 'slowmo_preview.mp4')
+                print("  Creating slow-motion preview video...")
+                self.slowmo_generator.create_slowmo_video(
+                    video_path, slowmo_path, landmarks_list, delivery_results[0], bowling_arm
+                )
+            else:
+                # Pattern-based mode: Enhanced video with slow-motion
+                # Enhanced video with slow-motion and alerts
+                output_video = os.path.join(output_dir, 'enhanced_annotated_video.mp4')
+                print(f"\nCreating enhanced annotated video: {output_video}")
+                self.enhanced_video_annotator.create_enhanced_video(
+                    video_path, output_video, landmarks_list,
+                    delivery_results[0], bowling_arm, video_metadata['fps']
+                )
+                
+                # HTML report
+                html_report_path = os.path.join(output_dir, 'analysis_report.html')
+                print(f"Generating HTML report: {html_report_path}")
+                
+                # Calculate all angles for report
+                shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
+                all_angles = []
+                for frame_data in landmarks_list:
+                    if not frame_data['landmarks']:
+                        all_angles.append(None)
+                        continue
+                    lm = frame_data['landmarks']
+                    if all(idx in lm for idx in [shoulder_idx, elbow_idx, wrist_idx]):
+                        s = np.array([lm[shoulder_idx]['x'], lm[shoulder_idx]['y'], lm[shoulder_idx]['z']])
+                        e = np.array([lm[elbow_idx]['x'], lm[elbow_idx]['y'], lm[elbow_idx]['z']])
+                        w = np.array([lm[wrist_idx]['x'], lm[wrist_idx]['y'], lm[wrist_idx]['z']])
+                        all_angles.append(calculate_angle_3d(s, e, w))
+                    else:
+                        all_angles.append(None)
+                
+                self.html_report_generator.generate_report(
+                    video_path, delivery_results[0], landmarks_list,
+                    all_angles, bowling_arm, html_report_path
+                )
+                print(f"HTML report saved: {html_report_path}")
+        else:
+            # Standard annotated video
+            output_video = os.path.join(output_dir, 'annotated_video.mp4')
+            print(f"\nCreating annotated video: {output_video}")
+            self.video_annotator.create_annotated_video(
+                video_path, output_video, landmarks_list, delivery_results, bowling_arm
+            )
         
         return delivery_results
     
@@ -157,46 +244,158 @@ class BowlingAnalyser:
             result['quality_notes'].append('Missing or low-confidence landmarks')
             return result
         
-        # Smooth positions
+        # Calculate RAW angles first (for pattern detection)
+        raw_angles = []
+        for i in range(len(positions['shoulder'])):
+            if (positions['shoulder'][i] is not None and 
+                positions['elbow'][i] is not None and 
+                positions['wrist'][i] is not None):
+                angle = calculate_angle_3d(
+                    positions['shoulder'][i], 
+                    positions['elbow'][i], 
+                    positions['wrist'][i]
+                )
+                raw_angles.append(angle)
+            else:
+                raw_angles.append(None)
+        
+        # Analyze extension pattern using RAW angles to detect chucking
+        # (smoothing would hide the sudden spike that indicates illegal action)
+        extension_analysis = analyze_extension_pattern(
+            raw_angles, 0, len(raw_angles) - 1
+        )
+        
+        # Now smooth positions for extension measurement
         shoulder_pos = smooth_positions(positions['shoulder'], sigma=1.5)
         elbow_pos = smooth_positions(positions['elbow'], sigma=1.5)
         wrist_pos = smooth_positions(positions['wrist'], sigma=1.5)
         
-        # Calculate angles
-        initial_angle = calculate_angle_3d(
-            shoulder_pos[0], elbow_pos[0], wrist_pos[0]
-        )
-        final_angle = calculate_angle_3d(
-            shoulder_pos[-1], elbow_pos[-1], wrist_pos[-1]
-        )
+        # Calculate smoothed angles for final extension measurement
+        smoothed_angles = []
+        for i in range(len(shoulder_pos)):
+            if shoulder_pos[i] is not None and elbow_pos[i] is not None and wrist_pos[i] is not None:
+                angle = calculate_angle_3d(shoulder_pos[i], elbow_pos[i], wrist_pos[i])
+                smoothed_angles.append(angle)
+            else:
+                smoothed_angles.append(None)
+        
+        initial_angle = smoothed_angles[0] if smoothed_angles[0] is not None else 0
+        final_angle = smoothed_angles[-1] if smoothed_angles[-1] is not None else 0
         
         extension = calculate_elbow_extension(initial_angle, final_angle)
         
         result['elbow_extension'] = extension
         result['pose_confidence'] = positions['avg_confidence']
         
+        result['extension_pattern'] = extension_analysis['pattern']
+        result['max_frame_change'] = extension_analysis['max_frame_change']
+        
         # Assess quality
         if positions['avg_confidence'] < 0.5:
             result['quality_notes'].append('Low pose detection confidence')
         
-        if release_frame - horizontal_frame < 5:
+        measurement_window = release_frame - horizontal_frame
+        if measurement_window < 5:
             result['quality_notes'].append('Very short measurement window')
         
-        # Classify result
-        if positions['avg_confidence'] < 0.4:
+        # Check for negative extension (arm bending instead of straightening)
+        if extension < 0:
+            result['quality_notes'].append(f'Negative extension detected (arm bending, not straightening)')
             result['result'] = 'unable to assess'
-            result['reason'] = 'low confidence pose detection'
-        elif extension <= self.ICC_THRESHOLD:
-            result['result'] = 'likely within threshold'
-            result['reason'] = f'extension {extension:.1f}° <= {self.ICC_THRESHOLD}°'
-        elif extension <= self.ICC_THRESHOLD + 5:
-            result['result'] = 'possible concern'
-            result['reason'] = f'extension {extension:.1f}° near threshold ({self.ICC_THRESHOLD}°)'
-        else:
-            result['result'] = 'possible concern'
-            result['reason'] = f'extension {extension:.1f}° > {self.ICC_THRESHOLD}°'
+            result['reason'] = 'negative extension suggests incorrect phase detection'
+            return result
+        
+        # Classify result using pattern analysis
+        classification, reason = classify_action(
+            extension_analysis, extension, positions['avg_confidence']
+        )
+        
+        result['result'] = classification
+        result['reason'] = reason
         
         return result
+    
+    def _analyse_delivery_full_rotation(self, landmarks_list: List[Dict],
+                                       bowling_arm: str, video_metadata: Dict,
+                                       delivery_idx: int, manual_overrides: Optional[Dict],
+                                       start_frame: int, end_frame: int,
+                                       output_dir: str) -> Dict:
+        """Analyse delivery using full rotation analysis."""
+        
+        # Detect phases for ICC mode
+        horizontal_frame = PhaseDetector.detect_arm_horizontal(
+            landmarks_list, bowling_arm, start_frame, end_frame
+        )
+        release_frame = None
+        if horizontal_frame is not None:
+            release_frame = PhaseDetector.detect_ball_release(
+                landmarks_list, bowling_arm, horizontal_frame
+            )
+        
+        # Apply manual overrides
+        if manual_overrides and delivery_idx in manual_overrides:
+            overrides = manual_overrides[delivery_idx]
+            horizontal_frame = overrides.get('horizontal_frame', horizontal_frame)
+            release_frame = overrides.get('release_frame', release_frame)
+        
+        # Run full rotation analysis
+        full_analysis = self.full_rotation_analyzer.analyze_full_rotation(
+            landmarks_list, video_metadata, bowling_arm,
+            horizontal_frame, release_frame
+        )
+        
+        # Build result
+        result = {
+            'delivery_number': delivery_idx + 1,
+            'start_frame': start_frame,
+            'end_frame': end_frame,
+            'start_timestamp': start_frame / video_metadata['fps'],
+            'end_timestamp': end_frame / video_metadata['fps'],
+            'bowling_arm': bowling_arm,
+            'horizontal_frame': horizontal_frame,
+            'horizontal_timestamp': horizontal_frame / video_metadata['fps'] if horizontal_frame else None,
+            'release_frame': release_frame,
+            'release_timestamp': release_frame / video_metadata['fps'] if release_frame else None,
+            
+            # Full rotation data
+            'native_fps': full_analysis['native_fps'],
+            'frame_interval': full_analysis['frame_interval'],
+            'num_samples': len(full_analysis['native_samples']),
+            'calculated_noise_tolerance': full_analysis['calculated_noise_tolerance'],
+            
+            # Strict mode results
+            'strict_verdict': full_analysis['strict_analysis']['verdict'],
+            'strict_reason': full_analysis['strict_analysis']['reason'],
+            'strict_num_events': full_analysis['strict_analysis']['num_events'],
+            'strict_tolerance': full_analysis['strict_tolerance'],
+            
+            # ICC mode results
+            'icc_verdict': full_analysis['icc_analysis']['verdict'] if full_analysis['icc_analysis'] else 'N/A',
+            'icc_reason': full_analysis['icc_analysis']['reason'] if full_analysis['icc_analysis'] else 'N/A',
+            'icc_extension': full_analysis['icc_analysis']['total_extension'] if full_analysis['icc_analysis'] else 0,
+            'icc_tolerance': full_analysis['icc_tolerance'],
+            
+            # Compatibility fields for video annotator
+            'elbow_extension': full_analysis['icc_analysis']['total_extension'] if full_analysis['icc_analysis'] else 0,
+            'pose_confidence': 1.0,  # High-res samples have good confidence
+            'quality_notes': [],
+            'result': full_analysis['strict_analysis']['verdict'],  # Use strict verdict as primary
+            'reason': full_analysis['strict_analysis']['reason'],
+            
+            # Store full analysis for reporting
+            'full_rotation_analysis': full_analysis
+        }
+        
+        return result
+    
+    def _generate_full_rotation_report(self, video_path: str, landmarks_list: List[Dict],
+                                      result: Dict, output_dir: str, bowling_arm: str):
+        """Generate comprehensive HTML report for full rotation analysis."""
+        report_path = os.path.join(output_dir, 'full_rotation_report.html')
+        self.full_rotation_report.generate_report(
+            result, video_path, report_path, landmarks_list, bowling_arm
+        )
+        print(f"  Full rotation report: {report_path}")
     
     def _extract_arm_positions(self, landmarks_list: List[Dict],
                               horizontal_frame: int, release_frame: int,
