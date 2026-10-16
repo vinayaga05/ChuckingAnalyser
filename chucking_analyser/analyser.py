@@ -12,6 +12,7 @@ from .delivery_detector import DeliveryDetector
 from .phase_detector import PhaseDetector
 from .angle_calculator import calculate_angle_3d, calculate_elbow_extension, smooth_positions
 from .video_annotator import VideoAnnotator
+from .extension_analyzer import analyze_extension_pattern, classify_action
 
 
 class BowlingAnalyser:
@@ -157,44 +158,74 @@ class BowlingAnalyser:
             result['quality_notes'].append('Missing or low-confidence landmarks')
             return result
         
-        # Smooth positions
+        # Calculate RAW angles first (for pattern detection)
+        raw_angles = []
+        for i in range(len(positions['shoulder'])):
+            if (positions['shoulder'][i] is not None and 
+                positions['elbow'][i] is not None and 
+                positions['wrist'][i] is not None):
+                angle = calculate_angle_3d(
+                    positions['shoulder'][i], 
+                    positions['elbow'][i], 
+                    positions['wrist'][i]
+                )
+                raw_angles.append(angle)
+            else:
+                raw_angles.append(None)
+        
+        # Analyze extension pattern using RAW angles to detect chucking
+        # (smoothing would hide the sudden spike that indicates illegal action)
+        extension_analysis = analyze_extension_pattern(
+            raw_angles, 0, len(raw_angles) - 1
+        )
+        
+        # Now smooth positions for extension measurement
         shoulder_pos = smooth_positions(positions['shoulder'], sigma=1.5)
         elbow_pos = smooth_positions(positions['elbow'], sigma=1.5)
         wrist_pos = smooth_positions(positions['wrist'], sigma=1.5)
         
-        # Calculate angles
-        initial_angle = calculate_angle_3d(
-            shoulder_pos[0], elbow_pos[0], wrist_pos[0]
-        )
-        final_angle = calculate_angle_3d(
-            shoulder_pos[-1], elbow_pos[-1], wrist_pos[-1]
-        )
+        # Calculate smoothed angles for final extension measurement
+        smoothed_angles = []
+        for i in range(len(shoulder_pos)):
+            if shoulder_pos[i] is not None and elbow_pos[i] is not None and wrist_pos[i] is not None:
+                angle = calculate_angle_3d(shoulder_pos[i], elbow_pos[i], wrist_pos[i])
+                smoothed_angles.append(angle)
+            else:
+                smoothed_angles.append(None)
+        
+        initial_angle = smoothed_angles[0] if smoothed_angles[0] is not None else 0
+        final_angle = smoothed_angles[-1] if smoothed_angles[-1] is not None else 0
         
         extension = calculate_elbow_extension(initial_angle, final_angle)
         
         result['elbow_extension'] = extension
         result['pose_confidence'] = positions['avg_confidence']
         
+        result['extension_pattern'] = extension_analysis['pattern']
+        result['max_frame_change'] = extension_analysis['max_frame_change']
+        
         # Assess quality
         if positions['avg_confidence'] < 0.5:
             result['quality_notes'].append('Low pose detection confidence')
         
-        if release_frame - horizontal_frame < 5:
+        measurement_window = release_frame - horizontal_frame
+        if measurement_window < 5:
             result['quality_notes'].append('Very short measurement window')
         
-        # Classify result
-        if positions['avg_confidence'] < 0.4:
+        # Check for negative extension (arm bending instead of straightening)
+        if extension < 0:
+            result['quality_notes'].append(f'Negative extension detected (arm bending, not straightening)')
             result['result'] = 'unable to assess'
-            result['reason'] = 'low confidence pose detection'
-        elif extension <= self.ICC_THRESHOLD:
-            result['result'] = 'likely within threshold'
-            result['reason'] = f'extension {extension:.1f}° <= {self.ICC_THRESHOLD}°'
-        elif extension <= self.ICC_THRESHOLD + 5:
-            result['result'] = 'possible concern'
-            result['reason'] = f'extension {extension:.1f}° near threshold ({self.ICC_THRESHOLD}°)'
-        else:
-            result['result'] = 'possible concern'
-            result['reason'] = f'extension {extension:.1f}° > {self.ICC_THRESHOLD}°'
+            result['reason'] = 'negative extension suggests incorrect phase detection'
+            return result
+        
+        # Classify result using pattern analysis
+        classification, reason = classify_action(
+            extension_analysis, extension, positions['avg_confidence']
+        )
+        
+        result['result'] = classification
+        result['reason'] = reason
         
         return result
     

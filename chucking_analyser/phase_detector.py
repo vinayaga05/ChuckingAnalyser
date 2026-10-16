@@ -90,7 +90,11 @@ class PhaseDetector:
     def detect_arm_horizontal(landmarks_list: List[Dict], bowling_arm: str,
                              start_frame: int = 0, end_frame: Optional[int] = None) -> Optional[int]:
         """
-        Detect frame where bowling arm reaches horizontal position.
+        Detect the start of the critical delivery phase for extension measurement.
+        
+        ICC rules measure extension during the final delivery action. This identifies
+        a frame approximately 15-20 frames before peak extension, which captures the
+        critical phase where illegal elbow straightening would occur.
         
         Args:
             landmarks_list: List of frame data with landmarks
@@ -99,15 +103,18 @@ class PhaseDetector:
             end_frame: Stop searching at this frame (None = end of video)
             
         Returns:
-            Frame index where arm is horizontal, or None if not found
+            Frame index for measurement start (critical phase begins), or None if not found
         """
+        from .angle_calculator import calculate_angle_3d
+        
         shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
         
         if end_frame is None:
             end_frame = len(landmarks_list)
         
-        best_frame = None
-        best_score = float('inf')
+        # Find the frame with maximum elbow angle (peak extension)
+        max_angle = 0
+        max_angle_frame = None
         
         for i in range(start_frame, min(end_frame, len(landmarks_list))):
             frame_data = landmarks_list[i]
@@ -117,88 +124,90 @@ class PhaseDetector:
             
             landmarks = frame_data['landmarks']
             
-            if shoulder_idx not in landmarks or elbow_idx not in landmarks:
+            if not all(idx in landmarks for idx in [shoulder_idx, elbow_idx, wrist_idx]):
                 continue
             
-            shoulder = np.array([landmarks[shoulder_idx]['x'], 
-                               landmarks[shoulder_idx]['y']])
-            elbow = np.array([landmarks[elbow_idx]['x'], 
-                            landmarks[elbow_idx]['y']])
+            shoulder_3d = np.array([landmarks[shoulder_idx]['x'],
+                                   landmarks[shoulder_idx]['y'],
+                                   landmarks[shoulder_idx]['z']])
+            elbow_3d = np.array([landmarks[elbow_idx]['x'],
+                                landmarks[elbow_idx]['y'],
+                                landmarks[elbow_idx]['z']])
+            wrist_3d = np.array([landmarks[wrist_idx]['x'],
+                                landmarks[wrist_idx]['y'],
+                                landmarks[wrist_idx]['z']])
             
-            # Calculate angle from horizontal (0 degrees = horizontal)
-            arm_vector = elbow - shoulder
-            angle_from_horizontal = np.abs(np.arctan2(arm_vector[1], arm_vector[0]))
+            angle = calculate_angle_3d(shoulder_3d, elbow_3d, wrist_3d)
             
-            # Score is how close to horizontal (0 radians)
-            score = angle_from_horizontal
-            
-            if score < best_score:
-                best_score = score
-                best_frame = i
+            if angle > max_angle:
+                max_angle = angle
+                max_angle_frame = i
         
-        # Only return if reasonably horizontal (within ~30 degrees)
-        if best_score < np.radians(30):
-            return best_frame
+        if max_angle_frame is None:
+            return None
         
-        return None
+        # The critical delivery phase for detecting chucking is the final 8-10 frames
+        # (~0.13-0.17 sec at 60fps) before peak extension, where sudden elbow 
+        # straightening (as opposed to whole-arm rotation) would occur.
+        CRITICAL_PHASE_FRAMES = 10
+        horizontal_frame = max(start_frame, max_angle_frame - CRITICAL_PHASE_FRAMES)
+        
+        return horizontal_frame
     
     @staticmethod
     def detect_ball_release(landmarks_list: List[Dict], bowling_arm: str,
                            horizontal_frame: int, search_window: int = 30) -> Optional[int]:
         """
-        Detect ball release frame based on wrist deceleration.
+        Detect ball release frame at or near peak extension.
+        
+        Ball release typically occurs at or just before the point of maximum
+        elbow extension during the delivery action.
         
         Args:
             landmarks_list: List of frame data with landmarks
             bowling_arm: 'left' or 'right'
-            horizontal_frame: Frame where arm reached horizontal
+            horizontal_frame: Frame where critical phase began
             search_window: Number of frames to search after horizontal
             
         Returns:
-            Frame index of estimated ball release, or None if not found
+            Frame index of estimated ball release (at peak extension)
         """
-        _, _, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
+        from .angle_calculator import calculate_angle_3d
+        
+        shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
         
         start_frame = horizontal_frame
         end_frame = min(horizontal_frame + search_window, len(landmarks_list))
         
-        wrist_speeds = []
-        valid_frames = []
+        # Find maximum extension (largest elbow angle) in window
+        max_angle = 0
+        max_angle_frame = None
         
-        for i in range(start_frame + 1, end_frame):
-            prev_frame = landmarks_list[i-1]
-            curr_frame = landmarks_list[i]
+        for i in range(start_frame, end_frame):
+            frame_data = landmarks_list[i]
             
-            if not (prev_frame['landmarks'] and curr_frame['landmarks']):
+            if not frame_data['landmarks']:
                 continue
             
-            if wrist_idx not in prev_frame['landmarks'] or \
-               wrist_idx not in curr_frame['landmarks']:
+            landmarks = frame_data['landmarks']
+            
+            if not all(idx in landmarks for idx in [shoulder_idx, elbow_idx, wrist_idx]):
                 continue
             
-            prev_wrist = np.array([
-                prev_frame['landmarks'][wrist_idx]['x'],
-                prev_frame['landmarks'][wrist_idx]['y']
-            ])
-            curr_wrist = np.array([
-                curr_frame['landmarks'][wrist_idx]['x'],
-                curr_frame['landmarks'][wrist_idx]['y']
-            ])
+            shoulder = np.array([landmarks[shoulder_idx]['x'],
+                               landmarks[shoulder_idx]['y'],
+                               landmarks[shoulder_idx]['z']])
+            elbow = np.array([landmarks[elbow_idx]['x'],
+                            landmarks[elbow_idx]['y'],
+                            landmarks[elbow_idx]['z']])
+            wrist = np.array([landmarks[wrist_idx]['x'],
+                            landmarks[wrist_idx]['y'],
+                            landmarks[wrist_idx]['z']])
             
-            speed = np.linalg.norm(curr_wrist - prev_wrist)
-            wrist_speeds.append(speed)
-            valid_frames.append(i)
+            angle = calculate_angle_3d(shoulder, elbow, wrist)
+            
+            if angle > max_angle:
+                max_angle = angle
+                max_angle_frame = i
         
-        if not wrist_speeds:
-            return None
-        
-        # Find peak speed (likely near release)
-        peak_idx = np.argmax(wrist_speeds)
-        
-        # Look for significant deceleration after peak
-        for i in range(peak_idx + 1, len(wrist_speeds)):
-            if wrist_speeds[i] < 0.5 * wrist_speeds[peak_idx]:
-                return valid_frames[i]
-        
-        # If no clear deceleration, return peak
-        return valid_frames[peak_idx] if peak_idx < len(valid_frames) else None
+        return max_angle_frame
