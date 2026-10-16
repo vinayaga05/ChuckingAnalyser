@@ -102,7 +102,8 @@ def analyse_command(args):
             if 'strict_verdict' in delivery:
                 # Full rotation mode
                 print(f"  Native FPS: {delivery['native_fps']:.1f}")
-                print(f"  Samples: {delivery['num_samples']} @ 0.01s intervals")
+                print(f"  Samples: {delivery['num_samples']} frames (1 per frame at native FPS)")
+                print(f"  Frame interval: {delivery['frame_interval']:.4f}s")
                 print(f"  Calculated noise: {delivery['calculated_noise_tolerance']:.1f}°")
                 print(f"\n  STRICT MODE (no-bend rule, tolerance: {delivery['strict_tolerance']:.1f}°):")
                 print(f"    Verdict: {delivery['strict_verdict']}")

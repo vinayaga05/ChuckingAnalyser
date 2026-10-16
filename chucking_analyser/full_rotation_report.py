@@ -15,20 +15,28 @@ import os
 class FullRotationHTMLReport:
     """Generate comprehensive HTML reports for full rotation analysis."""
     
-    def generate_report(self, result: Dict, video_path: str, output_path: str):
+    def generate_report(self, result: Dict, video_path: str, output_path: str,
+                       landmarks_list: List[Dict] = None, bowling_arm: str = None):
         """Generate full rotation HTML report."""
         
         analysis = result['full_rotation_analysis']
-        samples = analysis['high_res_samples']
+        samples = analysis['native_samples']
         
         # Generate charts
         angle_vs_time_chart = self._create_angle_vs_time_chart(samples, analysis)
         sample_dist_chart = self._create_sample_distribution_chart(samples)
+        arm_path_chart = None
+        
+        # Generate arm path if landmarks available
+        if landmarks_list and bowling_arm:
+            arm_path_chart = self._create_arm_path_chart(
+                landmarks_list, samples, analysis, bowling_arm, result
+            )
         
         # Build HTML
         html = self._build_html(
             result, analysis, samples,
-            angle_vs_time_chart, sample_dist_chart,
+            angle_vs_time_chart, sample_dist_chart, arm_path_chart,
             video_path
         )
         
@@ -112,7 +120,87 @@ class FullRotationHTMLReport:
         
         return img_base64
     
-    def _build_html(self, result, analysis, samples, chart1, chart2, video_path):
+    def _create_arm_path_chart(self, landmarks_list, samples, analysis, bowling_arm, result):
+        """Create arm path trajectory plot colored by elbow angle."""
+        from .phase_detector import PhaseDetector
+        
+        shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
+        
+        # Extract trajectories
+        wrist_x, wrist_y, elbow_x, elbow_y = [], [], [], []
+        angles_for_color = []
+        
+        for sample in samples:
+            frame_idx = sample['frame']
+            if frame_idx < len(landmarks_list):
+                lm = landmarks_list[frame_idx]['landmarks']
+                if lm and all(idx in lm for idx in [elbow_idx, wrist_idx]):
+                    wrist_x.append(lm[wrist_idx]['x'])
+                    wrist_y.append(1.0 - lm[wrist_idx]['y'])  # Flip Y for display
+                    elbow_x.append(lm[elbow_idx]['x'])
+                    elbow_y.append(1.0 - lm[elbow_idx]['y'])
+                    angles_for_color.append(sample['angle'])
+        
+        if not wrist_x:
+            return None
+        
+        fig, ax = plt.subplots(figsize=(10, 8))
+        
+        # Plot with color based on angle
+        scatter_wrist = ax.scatter(wrist_x, wrist_y, c=angles_for_color, 
+                                   cmap='coolwarm', s=40, alpha=0.6,
+                                   vmin=80, vmax=180, label='Wrist Path')
+        scatter_elbow = ax.scatter(elbow_x, elbow_y, c=angles_for_color,
+                                  cmap='coolwarm', s=30, alpha=0.5,
+                                  vmin=80, vmax=180, marker='s', label='Elbow Path')
+        
+        # Mark bend events
+        bend_events = analysis['strict_analysis']['bend_events']
+        for event in bend_events[:20]:  # Limit to first 20
+            frame_idx = event['frame']
+            sample_idx = next((i for i, s in enumerate(samples) if s['frame'] == frame_idx), None)
+            if sample_idx is not None and sample_idx < len(wrist_x):
+                ax.plot(wrist_x[sample_idx], wrist_y[sample_idx], 'r*', 
+                       markersize=15, markeredgecolor='white', markeredgewidth=1.5)
+        
+        # Colorbar
+        cbar = plt.colorbar(scatter_wrist, ax=ax)
+        cbar.set_label('Elbow Angle (degrees)', fontsize=11)
+        
+        ax.set_xlabel('Normalized X Position', fontsize=12)
+        ax.set_ylabel('Normalized Y Position', fontsize=12)
+        ax.set_title('Arm Trajectory During Full Rotation\n(Wrist & Elbow Paths, Color = Angle, Red Stars = Bend Events)', 
+                    fontsize=13, fontweight='bold')
+        ax.legend(loc='best')
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect('equal')
+        
+        buf = io.BytesIO()
+        plt.tight_layout()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight')
+        buf.seek(0)
+        img_base64 = base64.b64encode(buf.read()).decode()
+        plt.close()
+        
+        return img_base64
+    
+    def _build_arm_path_section(self, chart_data):
+        """Build arm path section."""
+        if not chart_data:
+            return ''
+        
+        return f'''
+            <div class="chart-section">
+                <h2>🎯 Arm Trajectory Path</h2>
+                <img src="data:image/png;base64,{chart_data}" alt="Arm Path Chart">
+                <p style="margin-top: 10px; color: #666; font-size: 0.9em;">
+                    Wrist and elbow trajectories during full arm rotation. Color indicates elbow angle 
+                    (blue = flexed, white = neutral, red = extended). Red stars mark bend events.
+                </p>
+            </div>
+        '''
+    
+    def _build_html(self, result, analysis, samples, chart1, chart2, chart3, video_path):
         """Build complete HTML document."""
         
         video_name = os.path.basename(video_path)
@@ -347,7 +435,7 @@ class FullRotationHTMLReport:
     <div class="container">
         <div class="header">
             <h1>🏏 Full Arm Rotation Analysis</h1>
-            <div class="subtitle">High-Resolution Elbow Angle Tracking (100 Hz Sampling)</div>
+            <div class="subtitle">Native Frame Rate Analysis - One Sample Per Frame</div>
             <div class="subtitle" style="margin-top: 10px; font-size: 0.95em;">{video_name}</div>
         </div>
         
@@ -366,12 +454,12 @@ class FullRotationHTMLReport:
                     <div class="value">{result['native_fps']:.1f}</div>
                 </div>
                 <div class="metadata-item">
-                    <div class="label">Sampling Interval</div>
-                    <div class="value">{result['sampling_interval']:.3f} s</div>
+                    <div class="label">Frame Interval</div>
+                    <div class="value">{result['frame_interval']:.4f} s</div>
                 </div>
                 <div class="metadata-item">
                     <div class="label">Total Samples</div>
-                    <div class="value">{result['num_samples']}</div>
+                    <div class="value">{result['num_samples']} frames</div>
                 </div>
                 <div class="metadata-item">
                     <div class="label">Calculated Noise</div>
@@ -435,12 +523,14 @@ class FullRotationHTMLReport:
                 <img src="data:image/png;base64,{chart2}" alt="Distribution Charts">
             </div>
             
+            {self._build_arm_path_section(chart3)}
+            
             {self._build_bend_events_table(strict['bend_events'], 'strict')}
             
             {self._build_bend_events_table(icc['bend_events'], 'icc') if icc else ''}
             
             <button class="collapsible">
-                📋 Full Sample Table ({len(samples)} samples @ 0.01s intervals)
+                📋 Full Sample Table ({len(samples)} frames @ {result['native_fps']:.1f} FPS)
             </button>
             <div class="collapsible-content">
                 <div class="table-wrapper">
@@ -454,7 +544,7 @@ class FullRotationHTMLReport:
         </div>
         
         <div class="footer">
-            Generated by Cricket Bowling Action Analyser (Full Rotation Mode) • 
+            Generated by Cricket Bowling Action Analyser (Full Rotation Mode @ Native FPS) • 
             2D Camera-Based Screening Tool • 
             Not for Official Rulings
         </div>
@@ -541,17 +631,13 @@ class FullRotationHTMLReport:
         """Build full samples table."""
         rows = []
         for i, sample in enumerate(samples, 1):
-            status_class = 'measured' if sample['measured'] else 'interpolated'
-            status_text = '✓ Measured' if sample['measured'] else '◐ Interpolated'
-            
             rows.append(f'''
                 <tr>
                     <td>{i}</td>
-                    <td>{sample['time']:.3f}</td>
                     <td>{sample['frame']}</td>
+                    <td>{sample['time']:.4f}</td>
                     <td>{sample['angle']:.2f}°</td>
                     <td>{sample.get('change', 0):.2f}°</td>
-                    <td class="{status_class}">{status_text}</td>
                     <td>{sample['confidence']:.3f}</td>
                 </tr>
             ''')
@@ -561,11 +647,10 @@ class FullRotationHTMLReport:
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>Time (s)</th>
                         <th>Frame</th>
+                        <th>Time (s)</th>
                         <th>Elbow Angle</th>
                         <th>Change</th>
-                        <th>Status</th>
                         <th>Confidence</th>
                     </tr>
                 </thead>

@@ -17,6 +17,7 @@ from .html_report_generator import HTMLReportGenerator
 from .extension_analyzer import analyze_extension_pattern, classify_action
 from .full_rotation_analyzer import FullRotationAnalyzer
 from .full_rotation_report import FullRotationHTMLReport
+from .slowmo_video_generator import SlowMotionVideoGenerator
 
 
 class BowlingAnalyser:
@@ -33,6 +34,7 @@ class BowlingAnalyser:
         self.html_report_generator = HTMLReportGenerator()
         self.full_rotation_analyzer = FullRotationAnalyzer(strict_tolerance=strict_tolerance)
         self.full_rotation_report = FullRotationHTMLReport()
+        self.slowmo_generator = SlowMotionVideoGenerator()
     
     def analyse_video(self, video_path: str, output_dir: str,
                      manual_overrides: Optional[Dict] = None,
@@ -97,7 +99,9 @@ class BowlingAnalyser:
                 # Export CSV
                 csv_path = os.path.join(output_dir, f'delivery_{idx + 1}_samples.csv')
                 self.full_rotation_analyzer.export_samples_csv(
-                    result['full_rotation_analysis']['high_res_samples'], csv_path
+                    result['full_rotation_analysis']['native_samples'], 
+                    csv_path,
+                    result['full_rotation_analysis']['native_fps']
                 )
                 print(f"  CSV exported: {csv_path}")
             else:
@@ -118,13 +122,23 @@ class BowlingAnalyser:
         
         print(f"\nResults saved to: {json_path}")
         
-        # Create annotated video
+        # Generate enhanced reports and videos
         if enhanced_report and len(delivery_results) > 0:
             if full_rotation_mode:
-                # Full rotation mode: Generate specialized report
+                # Full rotation mode: Generate specialized report and slow-mo video
                 print("\nGenerating full rotation reports...")
-                self._generate_full_rotation_report(video_path, delivery_results[0], output_dir)
+                self._generate_full_rotation_report(
+                    video_path, landmarks_list, delivery_results[0], output_dir, bowling_arm
+                )
+                
+                # Generate slow-motion preview video
+                slowmo_path = os.path.join(output_dir, 'slowmo_preview.mp4')
+                print("  Creating slow-motion preview video...")
+                self.slowmo_generator.create_slowmo_video(
+                    video_path, slowmo_path, landmarks_list, delivery_results[0], bowling_arm
+                )
             else:
+                # Pattern-based mode: Enhanced video with slow-motion
                 # Enhanced video with slow-motion and alerts
                 output_video = os.path.join(output_dir, 'enhanced_annotated_video.mp4')
                 print(f"\nCreating enhanced annotated video: {output_video}")
@@ -345,8 +359,8 @@ class BowlingAnalyser:
             
             # Full rotation data
             'native_fps': full_analysis['native_fps'],
-            'sampling_interval': full_analysis['sampling_interval'],
-            'num_samples': len(full_analysis['high_res_samples']),
+            'frame_interval': full_analysis['frame_interval'],
+            'num_samples': len(full_analysis['native_samples']),
             'calculated_noise_tolerance': full_analysis['calculated_noise_tolerance'],
             
             # Strict mode results
@@ -374,10 +388,13 @@ class BowlingAnalyser:
         
         return result
     
-    def _generate_full_rotation_report(self, video_path: str, result: Dict, output_dir: str):
+    def _generate_full_rotation_report(self, video_path: str, landmarks_list: List[Dict],
+                                      result: Dict, output_dir: str, bowling_arm: str):
         """Generate comprehensive HTML report for full rotation analysis."""
         report_path = os.path.join(output_dir, 'full_rotation_report.html')
-        self.full_rotation_report.generate_report(result, video_path, report_path)
+        self.full_rotation_report.generate_report(
+            result, video_path, report_path, landmarks_list, bowling_arm
+        )
         print(f"  Full rotation report: {report_path}")
     
     def _extract_arm_positions(self, landmarks_list: List[Dict],
