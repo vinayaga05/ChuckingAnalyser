@@ -34,6 +34,8 @@ For accurate biomechanical analysis, ICC-approved 3D motion capture is required.
     analyse_parser.add_argument('--output', '-o', default='output',
                                help='Output directory (default: output)')
     analyse_parser.add_argument('--overrides', help='JSON file with manual frame overrides')
+    analyse_parser.add_argument('--enhanced', action='store_true',
+                               help='Generate enhanced video and HTML report with charts and alerts')
     
     args = parser.parse_args()
     
@@ -80,7 +82,10 @@ def analyse_command(args):
     analyser = BowlingAnalyser()
     
     try:
-        results = analyser.analyse_video(args.video, args.output, manual_overrides)
+        results = analyser.analyse_video(
+            args.video, args.output, manual_overrides, 
+            enhanced_report=args.enhanced
+        )
         
         print("\n" + "=" * 70)
         print("ANALYSIS COMPLETE")

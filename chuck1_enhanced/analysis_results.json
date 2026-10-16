@@ -1,0 +1,32 @@
+{
+  "video_path": "/home/ubuntu/.cursor/projects/workspace/uploads/chuck1_0774.mp4",
+  "bowling_arm": "right",
+  "video_metadata": {
+    "fps": 59.992683819046455,
+    "frame_count": 820,
+    "width": 832,
+    "height": 464
+  },
+  "deliveries": [
+    {
+      "delivery_number": 1,
+      "start_frame": 0,
+      "end_frame": 819,
+      "start_timestamp": 0.0,
+      "end_timestamp": 13.651664634146343,
+      "bowling_arm": "right",
+      "horizontal_frame": 592,
+      "horizontal_timestamp": 9.867869918699187,
+      "release_frame": 602,
+      "release_timestamp": 10.034556910569107,
+      "elbow_extension": 12.063342049871267,
+      "pose_confidence": 0.9958040208527535,
+      "quality_notes": [],
+      "result": "possible concern",
+      "reason": "sudden elbow straightening detected (12.1\u00b0 spike)",
+      "extension_pattern": "sudden_spike",
+      "max_frame_change": 12.089824443215747
+    }
+  ],
+  "disclaimer": "This is a 2D camera estimate only and not an official ruling."
+}

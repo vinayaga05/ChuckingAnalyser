@@ -12,6 +12,8 @@ from .delivery_detector import DeliveryDetector
 from .phase_detector import PhaseDetector
 from .angle_calculator import calculate_angle_3d, calculate_elbow_extension, smooth_positions
 from .video_annotator import VideoAnnotator
+from .enhanced_video_annotator import EnhancedVideoAnnotator
+from .html_report_generator import HTMLReportGenerator
 from .extension_analyzer import analyze_extension_pattern, classify_action
 
 
@@ -25,9 +27,12 @@ class BowlingAnalyser:
         self.pose_detector = PoseDetector()
         self.delivery_detector = DeliveryDetector()
         self.video_annotator = VideoAnnotator()
+        self.enhanced_video_annotator = EnhancedVideoAnnotator()
+        self.html_report_generator = HTMLReportGenerator()
     
     def analyse_video(self, video_path: str, output_dir: str,
-                     manual_overrides: Optional[Dict] = None) -> List[Dict]:
+                     manual_overrides: Optional[Dict] = None,
+                     enhanced_report: bool = False) -> List[Dict]:
         """
         Analyse bowling video for illegal actions.
         
@@ -36,6 +41,7 @@ class BowlingAnalyser:
             output_dir: Directory for output files
             manual_overrides: Optional dict with manual frame overrides
                              Format: {delivery_idx: {'horizontal_frame': int, 'release_frame': int}}
+            enhanced_report: Generate enhanced video and HTML report
         
         Returns:
             List of delivery analysis results
@@ -88,11 +94,47 @@ class BowlingAnalyser:
         print(f"\nResults saved to: {json_path}")
         
         # Create annotated video
-        output_video = os.path.join(output_dir, 'annotated_video.mp4')
-        print(f"\nCreating annotated video: {output_video}")
-        self.video_annotator.create_annotated_video(
-            video_path, output_video, landmarks_list, delivery_results, bowling_arm
-        )
+        if enhanced_report and len(delivery_results) > 0:
+            # Enhanced video with slow-motion and alerts
+            output_video = os.path.join(output_dir, 'enhanced_annotated_video.mp4')
+            print(f"\nCreating enhanced annotated video: {output_video}")
+            self.enhanced_video_annotator.create_enhanced_video(
+                video_path, output_video, landmarks_list,
+                delivery_results[0], bowling_arm, video_metadata['fps']
+            )
+            
+            # HTML report
+            html_report_path = os.path.join(output_dir, 'analysis_report.html')
+            print(f"Generating HTML report: {html_report_path}")
+            
+            # Calculate all angles for report
+            shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
+            all_angles = []
+            for frame_data in landmarks_list:
+                if not frame_data['landmarks']:
+                    all_angles.append(None)
+                    continue
+                lm = frame_data['landmarks']
+                if all(idx in lm for idx in [shoulder_idx, elbow_idx, wrist_idx]):
+                    s = np.array([lm[shoulder_idx]['x'], lm[shoulder_idx]['y'], lm[shoulder_idx]['z']])
+                    e = np.array([lm[elbow_idx]['x'], lm[elbow_idx]['y'], lm[elbow_idx]['z']])
+                    w = np.array([lm[wrist_idx]['x'], lm[wrist_idx]['y'], lm[wrist_idx]['z']])
+                    all_angles.append(calculate_angle_3d(s, e, w))
+                else:
+                    all_angles.append(None)
+            
+            self.html_report_generator.generate_report(
+                video_path, delivery_results[0], landmarks_list,
+                all_angles, bowling_arm, html_report_path
+            )
+            print(f"HTML report saved: {html_report_path}")
+        else:
+            # Standard annotated video
+            output_video = os.path.join(output_dir, 'annotated_video.mp4')
+            print(f"\nCreating annotated video: {output_video}")
+            self.video_annotator.create_annotated_video(
+                video_path, output_video, landmarks_list, delivery_results, bowling_arm
+            )
         
         return delivery_results
     

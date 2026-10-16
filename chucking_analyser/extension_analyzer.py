@@ -91,6 +91,10 @@ def classify_action(extension_analysis: dict, total_extension: float,
     """
     Classify bowling action based on extension analysis.
     
+    NOTE: The sudden-versus-smooth pattern detection is an EXPERIMENTAL heuristic
+    validated on only two reference clips. Single 2D camera cannot perfectly
+    separate elbow extension from whole-arm rotation.
+    
     Returns:
         (result, reason) tuple
     """
@@ -98,24 +102,30 @@ def classify_action(extension_analysis: dict, total_extension: float,
     sudden = extension_analysis['sudden_change_detected']
     max_change = extension_analysis['max_frame_change']
     
+    # Use "unable to assess" more liberally for ambiguous cases
     if confidence < 0.4:
         return 'unable to assess', 'low confidence pose detection'
     
-    # Priority 1: Detect chucking by sudden spike at the end
+    # If confidence is marginal and pattern is ambiguous, be conservative
+    if confidence < 0.55 and pattern not in ['sudden_spike', 'normal']:
+        return 'unable to assess', 'marginal confidence with ambiguous pattern - recommend expert review'
+    
+    # Priority 1: Detect chucking by sudden spike at the end (experimental heuristic)
     if sudden and max_change > 8.0:
-        return 'possible concern', f'sudden elbow straightening detected ({max_change:.1f}° spike)'
+        return 'possible concern', f'sudden elbow straightening detected ({max_change:.1f}° spike) [experimental pattern-based detection]'
     elif pattern == 'sudden_spike':
-        return 'possible concern', f'abrupt extension pattern ({max_change:.1f}° peak change)'
+        return 'possible concern', f'abrupt extension pattern ({max_change:.1f}° peak change) [experimental heuristic - single 2D camera limitation]'
     
-    # Priority 2: Large smooth extension is likely whole-arm rotation (legal)
+    # Priority 2: Large smooth extension is likely whole-arm rotation (experimental)
     elif pattern == 'smooth_large' or pattern == 'gradual_large':
-        # Large smooth extension over many frames = whole arm rotation, not chucking
-        return 'likely within threshold', f'smooth extension pattern (total {total_extension:.1f}°, likely arm rotation not elbow straightening)'
+        # Note the experimental nature
+        return 'likely within threshold', f'smooth extension pattern (total {total_extension:.1f}°, likely arm rotation not elbow straightening) [experimental - cannot perfectly separate with 2D]'
     
-    # Priority 3: Normal threshold-based classification
+    # Priority 3: Normal threshold-based classification (more reliable)
     elif total_extension <= 15:
         return 'likely within threshold', f'extension {total_extension:.1f}° <= 15.0°'
     elif total_extension <= 20:
-        return 'possible concern', f'extension {total_extension:.1f}° moderately above threshold'
+        # Be more conservative for borderline cases
+        return 'possible concern', f'extension {total_extension:.1f}° moderately above threshold - recommend expert review'
     else:
-        return 'possible concern', f'large extension {total_extension:.1f}° detected'
+        return 'possible concern', f'large extension {total_extension:.1f}° detected - expert review required'

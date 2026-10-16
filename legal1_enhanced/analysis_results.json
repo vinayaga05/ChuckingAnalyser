@@ -1,0 +1,34 @@
+{
+  "video_path": "/home/ubuntu/.cursor/projects/workspace/uploads/legal1_3904.mp4",
+  "bowling_arm": "right",
+  "video_metadata": {
+    "fps": 60.01598295151838,
+    "frame_count": 751,
+    "width": 832,
+    "height": 464
+  },
+  "deliveries": [
+    {
+      "delivery_number": 1,
+      "start_frame": 0,
+      "end_frame": 750,
+      "start_timestamp": 0.0,
+      "end_timestamp": 12.496671105193075,
+      "bowling_arm": "right",
+      "horizontal_frame": 677,
+      "horizontal_timestamp": 11.280328450954283,
+      "release_frame": 687,
+      "release_timestamp": 11.446950732356857,
+      "elbow_extension": 39.12269757512743,
+      "pose_confidence": 0.4644955747732611,
+      "quality_notes": [
+        "Low pose detection confidence"
+      ],
+      "result": "likely within threshold",
+      "reason": "smooth extension pattern (total 39.1\u00b0, likely arm rotation not elbow straightening)",
+      "extension_pattern": "gradual_large",
+      "max_frame_change": 12.934083872214273
+    }
+  ],
+  "disclaimer": "This is a 2D camera estimate only and not an official ruling."
+}
