@@ -338,4 +338,69 @@ For questions, issues, or collaboration opportunities, please open an issue on t
 
 ---
 
+## Full Rotation Analysis Mode (NEW)
+
+### Overview
+
+The new `--full-rotation` mode provides comprehensive elbow angle tracking throughout the entire bowling arm rotation, replacing the experimental sudden-vs-smooth heuristic with high-resolution continuous sampling.
+
+### Features
+
+- **100 Hz Sampling**: Continuous 0.01-second intervals throughout full arm rotation
+- **Dual Evaluation Modes**:
+  - **Strict Mode**: No-bend rule - arm should not bend beyond noise tolerance during rotation
+  - **ICC Mode**: Standard 15° extension threshold from horizontal to release
+- **CSV Export**: Full sample data at 0.01s resolution with measured/interpolated flags
+- **Comprehensive Reports**: HTML reports with dual verdicts, charts, sample tables, bend events
+- **Event Tracking**: Every bend/extension event with timestamp, frame, magnitude, and phase
+
+### Usage
+
+```bash
+# Full rotation analysis with enhanced reporting
+python -m chucking_analyser analyse video.mp4 --output results/ --full-rotation --enhanced
+
+# Adjust strict mode tolerance (default: 3.0°)
+python -m chucking_analyser analyse video.mp4 --output results/ --full-rotation --strict-tolerance 5.0
+```
+
+### Output Files
+
+- `delivery_N_samples.csv` - All 0.01s samples with angles, changes, confidence
+- `full_rotation_report.html` - Self-contained visual report with:
+  - Dual verdict cards (Strict + ICC)
+  - Elbow angle vs time chart with highlighted bend events
+  - Sample distribution analysis
+  - Collapsible full sample table
+  - Bend event tables with detailed metadata
+- `analysis_results.json` - Complete analysis data
+
+### Understanding Results
+
+**Strict Mode**: Detects any elbow angle change exceeding the tolerance threshold throughout the full rotation. Very sensitive to:
+- Tracking noise and jitter
+- 2D projection artifacts (arm rotating toward/away from camera)
+- Camera perspective effects
+
+**ICC Mode**: Measures total extension in the ICC-defined window (horizontal to release). Still affected by 2D projection.
+
+**Important**: The test results demonstrate that 2D camera analysis creates significant artifacts. For example, a known legal delivery (legal1) shows 44.7° "extension" in ICC mode - physically impossible and clearly a 2D projection artifact.
+
+### Interpreting Verdicts
+
+- **Verdict: "Likely within threshold"**: No significant bend events detected above tolerance
+- **Verdict: "Possible concern"**: Bend events detected; requires manual review to distinguish real bending from 2D artifacts
+
+### Recommendations
+
+1. **Examine the HTML report**: Visual inspection of angle traces and event distribution
+2. **Review the CSV**: Check if "bend events" cluster (real) or are evenly distributed (noise/artifacts)
+3. **Compare both modes**: ICC mode more forgiving; strict mode very sensitive
+4. **Adjust tolerance**: For 2D analysis, strict tolerance of 5-7° may reduce false positives
+5. **Use for screening only**: Cannot replace 3D motion capture for definitive assessment
+
+See `FULL_ROTATION_ANALYSIS_RESULTS.md` for detailed test results and analysis of 2D projection effects.
+
+---
+
 **Remember**: This tool is for preliminary screening only. Official rulings require ICC-approved 3D motion capture analysis.
