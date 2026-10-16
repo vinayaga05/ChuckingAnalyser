@@ -15,6 +15,8 @@ from .video_annotator import VideoAnnotator
 from .enhanced_video_annotator import EnhancedVideoAnnotator
 from .html_report_generator import HTMLReportGenerator
 from .extension_analyzer import analyze_extension_pattern, classify_action
+from .full_rotation_analyzer import FullRotationAnalyzer
+from .full_rotation_report import FullRotationHTMLReport
 
 
 class BowlingAnalyser:
@@ -22,17 +24,20 @@ class BowlingAnalyser:
     
     ICC_THRESHOLD = 15.0  # degrees
     
-    def __init__(self):
+    def __init__(self, strict_tolerance: float = 3.0):
         """Initialize analyser components."""
         self.pose_detector = PoseDetector()
         self.delivery_detector = DeliveryDetector()
         self.video_annotator = VideoAnnotator()
         self.enhanced_video_annotator = EnhancedVideoAnnotator()
         self.html_report_generator = HTMLReportGenerator()
+        self.full_rotation_analyzer = FullRotationAnalyzer(strict_tolerance=strict_tolerance)
+        self.full_rotation_report = FullRotationHTMLReport()
     
     def analyse_video(self, video_path: str, output_dir: str,
                      manual_overrides: Optional[Dict] = None,
-                     enhanced_report: bool = False) -> List[Dict]:
+                     enhanced_report: bool = False,
+                     full_rotation_mode: bool = False) -> List[Dict]:
         """
         Analyse bowling video for illegal actions.
         
@@ -69,16 +74,36 @@ class BowlingAnalyser:
         for idx, (start_frame, end_frame) in enumerate(deliveries):
             print(f"\nAnalysing delivery {idx + 1}...")
             
-            result = self._analyse_delivery(
-                landmarks_list, bowling_arm, start_frame, end_frame,
-                idx, manual_overrides, video_metadata['fps']
-            )
+            if full_rotation_mode:
+                # Use full rotation analysis
+                result = self._analyse_delivery_full_rotation(
+                    landmarks_list, bowling_arm, video_metadata,
+                    idx, manual_overrides, start_frame, end_frame,
+                    output_dir
+                )
+            else:
+                # Use original pattern-based analysis
+                result = self._analyse_delivery(
+                    landmarks_list, bowling_arm, start_frame, end_frame,
+                    idx, manual_overrides, video_metadata['fps']
+                )
             
             delivery_results.append(result)
             
-            print(f"  Extension: {result['elbow_extension']:.1f}°")
-            print(f"  Result: {result['result']}")
-            print(f"  Reason: {result['reason']}")
+            if full_rotation_mode:
+                print(f"  Strict Mode: {result['strict_verdict']}")
+                print(f"  ICC Mode: {result['icc_verdict']}")
+                
+                # Export CSV
+                csv_path = os.path.join(output_dir, f'delivery_{idx + 1}_samples.csv')
+                self.full_rotation_analyzer.export_samples_csv(
+                    result['full_rotation_analysis']['high_res_samples'], csv_path
+                )
+                print(f"  CSV exported: {csv_path}")
+            else:
+                print(f"  Extension: {result['elbow_extension']:.1f}°")
+                print(f"  Result: {result['result']}")
+                print(f"  Reason: {result['reason']}")
         
         # Save JSON results
         json_path = os.path.join(output_dir, 'analysis_results.json')
@@ -95,39 +120,44 @@ class BowlingAnalyser:
         
         # Create annotated video
         if enhanced_report and len(delivery_results) > 0:
-            # Enhanced video with slow-motion and alerts
-            output_video = os.path.join(output_dir, 'enhanced_annotated_video.mp4')
-            print(f"\nCreating enhanced annotated video: {output_video}")
-            self.enhanced_video_annotator.create_enhanced_video(
-                video_path, output_video, landmarks_list,
-                delivery_results[0], bowling_arm, video_metadata['fps']
-            )
-            
-            # HTML report
-            html_report_path = os.path.join(output_dir, 'analysis_report.html')
-            print(f"Generating HTML report: {html_report_path}")
-            
-            # Calculate all angles for report
-            shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
-            all_angles = []
-            for frame_data in landmarks_list:
-                if not frame_data['landmarks']:
-                    all_angles.append(None)
-                    continue
-                lm = frame_data['landmarks']
-                if all(idx in lm for idx in [shoulder_idx, elbow_idx, wrist_idx]):
-                    s = np.array([lm[shoulder_idx]['x'], lm[shoulder_idx]['y'], lm[shoulder_idx]['z']])
-                    e = np.array([lm[elbow_idx]['x'], lm[elbow_idx]['y'], lm[elbow_idx]['z']])
-                    w = np.array([lm[wrist_idx]['x'], lm[wrist_idx]['y'], lm[wrist_idx]['z']])
-                    all_angles.append(calculate_angle_3d(s, e, w))
-                else:
-                    all_angles.append(None)
-            
-            self.html_report_generator.generate_report(
-                video_path, delivery_results[0], landmarks_list,
-                all_angles, bowling_arm, html_report_path
-            )
-            print(f"HTML report saved: {html_report_path}")
+            if full_rotation_mode:
+                # Full rotation mode: Generate specialized report
+                print("\nGenerating full rotation reports...")
+                self._generate_full_rotation_report(video_path, delivery_results[0], output_dir)
+            else:
+                # Enhanced video with slow-motion and alerts
+                output_video = os.path.join(output_dir, 'enhanced_annotated_video.mp4')
+                print(f"\nCreating enhanced annotated video: {output_video}")
+                self.enhanced_video_annotator.create_enhanced_video(
+                    video_path, output_video, landmarks_list,
+                    delivery_results[0], bowling_arm, video_metadata['fps']
+                )
+                
+                # HTML report
+                html_report_path = os.path.join(output_dir, 'analysis_report.html')
+                print(f"Generating HTML report: {html_report_path}")
+                
+                # Calculate all angles for report
+                shoulder_idx, elbow_idx, wrist_idx = PhaseDetector.get_arm_landmarks(bowling_arm)
+                all_angles = []
+                for frame_data in landmarks_list:
+                    if not frame_data['landmarks']:
+                        all_angles.append(None)
+                        continue
+                    lm = frame_data['landmarks']
+                    if all(idx in lm for idx in [shoulder_idx, elbow_idx, wrist_idx]):
+                        s = np.array([lm[shoulder_idx]['x'], lm[shoulder_idx]['y'], lm[shoulder_idx]['z']])
+                        e = np.array([lm[elbow_idx]['x'], lm[elbow_idx]['y'], lm[elbow_idx]['z']])
+                        w = np.array([lm[wrist_idx]['x'], lm[wrist_idx]['y'], lm[wrist_idx]['z']])
+                        all_angles.append(calculate_angle_3d(s, e, w))
+                    else:
+                        all_angles.append(None)
+                
+                self.html_report_generator.generate_report(
+                    video_path, delivery_results[0], landmarks_list,
+                    all_angles, bowling_arm, html_report_path
+                )
+                print(f"HTML report saved: {html_report_path}")
         else:
             # Standard annotated video
             output_video = os.path.join(output_dir, 'annotated_video.mp4')
@@ -270,6 +300,85 @@ class BowlingAnalyser:
         result['reason'] = reason
         
         return result
+    
+    def _analyse_delivery_full_rotation(self, landmarks_list: List[Dict],
+                                       bowling_arm: str, video_metadata: Dict,
+                                       delivery_idx: int, manual_overrides: Optional[Dict],
+                                       start_frame: int, end_frame: int,
+                                       output_dir: str) -> Dict:
+        """Analyse delivery using full rotation analysis."""
+        
+        # Detect phases for ICC mode
+        horizontal_frame = PhaseDetector.detect_arm_horizontal(
+            landmarks_list, bowling_arm, start_frame, end_frame
+        )
+        release_frame = None
+        if horizontal_frame is not None:
+            release_frame = PhaseDetector.detect_ball_release(
+                landmarks_list, bowling_arm, horizontal_frame
+            )
+        
+        # Apply manual overrides
+        if manual_overrides and delivery_idx in manual_overrides:
+            overrides = manual_overrides[delivery_idx]
+            horizontal_frame = overrides.get('horizontal_frame', horizontal_frame)
+            release_frame = overrides.get('release_frame', release_frame)
+        
+        # Run full rotation analysis
+        full_analysis = self.full_rotation_analyzer.analyze_full_rotation(
+            landmarks_list, video_metadata, bowling_arm,
+            horizontal_frame, release_frame
+        )
+        
+        # Build result
+        result = {
+            'delivery_number': delivery_idx + 1,
+            'start_frame': start_frame,
+            'end_frame': end_frame,
+            'start_timestamp': start_frame / video_metadata['fps'],
+            'end_timestamp': end_frame / video_metadata['fps'],
+            'bowling_arm': bowling_arm,
+            'horizontal_frame': horizontal_frame,
+            'horizontal_timestamp': horizontal_frame / video_metadata['fps'] if horizontal_frame else None,
+            'release_frame': release_frame,
+            'release_timestamp': release_frame / video_metadata['fps'] if release_frame else None,
+            
+            # Full rotation data
+            'native_fps': full_analysis['native_fps'],
+            'sampling_interval': full_analysis['sampling_interval'],
+            'num_samples': len(full_analysis['high_res_samples']),
+            'calculated_noise_tolerance': full_analysis['calculated_noise_tolerance'],
+            
+            # Strict mode results
+            'strict_verdict': full_analysis['strict_analysis']['verdict'],
+            'strict_reason': full_analysis['strict_analysis']['reason'],
+            'strict_num_events': full_analysis['strict_analysis']['num_events'],
+            'strict_tolerance': full_analysis['strict_tolerance'],
+            
+            # ICC mode results
+            'icc_verdict': full_analysis['icc_analysis']['verdict'] if full_analysis['icc_analysis'] else 'N/A',
+            'icc_reason': full_analysis['icc_analysis']['reason'] if full_analysis['icc_analysis'] else 'N/A',
+            'icc_extension': full_analysis['icc_analysis']['total_extension'] if full_analysis['icc_analysis'] else 0,
+            'icc_tolerance': full_analysis['icc_tolerance'],
+            
+            # Compatibility fields for video annotator
+            'elbow_extension': full_analysis['icc_analysis']['total_extension'] if full_analysis['icc_analysis'] else 0,
+            'pose_confidence': 1.0,  # High-res samples have good confidence
+            'quality_notes': [],
+            'result': full_analysis['strict_analysis']['verdict'],  # Use strict verdict as primary
+            'reason': full_analysis['strict_analysis']['reason'],
+            
+            # Store full analysis for reporting
+            'full_rotation_analysis': full_analysis
+        }
+        
+        return result
+    
+    def _generate_full_rotation_report(self, video_path: str, result: Dict, output_dir: str):
+        """Generate comprehensive HTML report for full rotation analysis."""
+        report_path = os.path.join(output_dir, 'full_rotation_report.html')
+        self.full_rotation_report.generate_report(result, video_path, report_path)
+        print(f"  Full rotation report: {report_path}")
     
     def _extract_arm_positions(self, landmarks_list: List[Dict],
                               horizontal_frame: int, release_frame: int,
